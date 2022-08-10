@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"runtime"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 	"github.com/ledgerwatch/erigon/ethdb/prune"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	batchCalltracesTimer = eth_metrics.NewRegisteredTimer("batch/callTraces/cost", nil)
+	avgCalltracesTimer   = eth_metrics.NewRegisteredTimer("avg/callTraces/cost", nil)
 )
 
 type CallTracesCfg struct {
@@ -44,6 +50,16 @@ func StageCallTracesCfg(
 }
 
 func SpawnCallTraces(s *StageState, tx kv.RwTx, cfg CallTracesCfg, ctx context.Context) error {
+	startTime := time.Now()
+	var batchSize uint64
+	defer func() {
+		batchCalltracesTimer.Update(time.Since(startTime))
+		if batchSize >= 1 {
+			avgStageCost := time.Since(startTime).Nanoseconds() / int64(batchSize)
+			avgCalltracesTimer.Update(time.Duration(avgStageCost))
+		}
+	}()
+
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		var err error
@@ -80,6 +96,7 @@ func SpawnCallTraces(s *StageState, tx kv.RwTx, cfg CallTracesCfg, ctx context.C
 		}
 	}
 
+	batchSize = endBlock - s.BlockNumber + 1
 	return nil
 }
 

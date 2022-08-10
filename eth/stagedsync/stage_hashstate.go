@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"time"
 
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
+
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/etl"
@@ -21,6 +23,12 @@ import (
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/node/nodecfg/datadir"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	batchHashStateTimer = eth_metrics.NewRegisteredTimer("batch/hashstate/cost", nil)
+	avgHashStateTimer   = eth_metrics.NewRegisteredTimer("avg/hashstate/cost", nil)
+	miningHashTimer     = eth_metrics.NewRegisteredTimer("mining/hashstate/cost", nil)
 )
 
 type HashStateCfg struct {
@@ -43,6 +51,19 @@ func StageHashStateCfg(db kv.RwDB, dirs datadir.Dirs, historyV2 bool, txNums *ex
 }
 
 func SpawnHashStateStage(s *StageState, tx kv.RwTx, cfg HashStateCfg, ctx context.Context) error {
+	startTime := time.Now()
+	var batchSize uint64
+	defer func() {
+		batchHashStateTimer.Update(time.Since(startTime))
+		if batchSize >= 1 {
+			avgStageCost := time.Since(startTime).Nanoseconds() / int64(batchSize)
+			batchHashStateTimer.Update(time.Duration(avgStageCost))
+		}
+		if len(s.state.stages) <= 5 {
+			miningHashTimer.Update(time.Since(startTime))
+		}
+	}()
+
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		var err error
@@ -90,6 +111,9 @@ func SpawnHashStateStage(s *StageState, tx kv.RwTx, cfg HashStateCfg, ctx contex
 			return err
 		}
 	}
+
+	batchSize = to - s.BlockNumber + 1
+
 	return nil
 }
 

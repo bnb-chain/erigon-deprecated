@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"math/big"
 	"os"
 	"os/signal"
@@ -48,6 +49,12 @@ import (
 
 const (
 	logInterval = 20 * time.Second
+)
+
+var (
+	batchExecutionTimer   = eth_metrics.NewRegisteredTimer("batch/execution/cost", nil)
+	avgExecutionTimer     = eth_metrics.NewRegisteredTimer("avg/execution/cost", nil)
+	totalExecutionCounter = eth_metrics.NewRegisteredCounter("execution/total/cost", nil)
 )
 
 type HasChangeSetWriter interface {
@@ -233,7 +240,7 @@ func newStateReaderWriter(
 
 // ================ Erigon22 ================
 
-func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, cfg ExecuteBlockCfg, initialCycle bool) (err error) {
+func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, cfg ExecuteBlockCfg, initialCycle bool, endBlock *uint64) (err error) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	execCtx, cancel := context.WithCancel(ctx)
@@ -273,6 +280,7 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 	if to > s.BlockNumber+16 {
 		log.Info(fmt.Sprintf("[%s] Blocks execution", logPrefix), "from", s.BlockNumber, "to", to)
 	}
+	*endBlock = to
 
 	rs := state.NewState22()
 
@@ -355,10 +363,29 @@ func senderStageProgress(tx kv.Tx, db kv.RoDB) (prevStageProgress uint64, err er
 // ================ Erigon22 End ================
 
 func SpawnExecuteBlocksStage(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, cfg ExecuteBlockCfg, initialCycle bool) (err error) {
-	if cfg.exec22 {
-		return ExecBlock22(s, u, tx, toBlock, ctx, cfg, initialCycle)
-	}
+	execStartTime := time.Now()
+	var execEndTime time.Time
 
+	var batchSize uint64
+	var endBlock uint64
+	defer func() {
+		execEndTime = time.Now()
+		if batchSize > 0 && endBlock > 0 {
+			if endBlock > 0 {
+				batchSize = endBlock - s.BlockNumber + 1
+			}
+			batchExecutionTimer.Update(time.Since(execStartTime))
+			avgExecutionCost := time.Since(execStartTime).Nanoseconds() / int64(batchSize)
+			avgExecutionTimer.Update(time.Duration(avgExecutionCost))
+		}
+		// mark total exection time of history
+		totalExecutionCounter.Inc(execEndTime.Sub(execStartTime).Nanoseconds())
+	}()
+
+	if cfg.exec22 {
+		endBlock = 0
+		return ExecBlock22(s, u, tx, toBlock, ctx, cfg, initialCycle, &endBlock)
+	}
 	quit := ctx.Done()
 	useExternalTx := tx != nil
 	if !useExternalTx {
@@ -534,6 +561,8 @@ Loop:
 	}
 
 	log.Info(fmt.Sprintf("[%s] Completed on", logPrefix), "block", stageProgress)
+	batchSize = stageProgress - s.BlockNumber + 1
+
 	return stoppedErr
 }
 

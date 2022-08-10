@@ -19,15 +19,15 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"math/big"
-
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/rlp"
 	"github.com/ledgerwatch/erigon/turbo/trie"
+	"io"
+	"math/big"
+	"time"
 )
 
 var emptyCodeHash = crypto.Keccak256(nil)
@@ -116,7 +116,6 @@ func newObject(db *IntraBlockState, address common.Address, data, original *acco
 		so.data.Root = trie.EmptyRoot
 	}
 	so.original.Copy(original)
-
 	return &so
 }
 
@@ -149,6 +148,14 @@ func (so *stateObject) touch() {
 
 // GetState returns a value from account storage.
 func (so *stateObject) GetState(key *common.Hash, out *uint256.Int) {
+	hitInCache := false
+	defer func() {
+		// GetCommittedState not hit cache
+		if !hitInCache {
+			syncL1MissStorageMeter.Mark(1)
+		}
+		totalStorageMeter2.Mark(1)
+	}()
 	// If the fake storage is set, only lookup the state here(in the debugging mode)
 	if so.fakeStorage != nil {
 		*out = so.fakeStorage[*key]
@@ -156,17 +163,25 @@ func (so *stateObject) GetState(key *common.Hash, out *uint256.Int) {
 	}
 	value, dirty := so.dirtyStorage[*key]
 	if dirty {
+		hitInCache = true
 		*out = value
 		return
 	}
+
 	// Otherwise return the entry's original value
-	so.GetCommittedState(key, out)
+	so.GetCommittedState(key, out, &hitInCache, true)
 }
 
 // GetCommittedState retrieves a value from the committed account storage trie.
-func (so *stateObject) GetCommittedState(key *common.Hash, out *uint256.Int) {
+func (so *stateObject) GetCommittedState(key *common.Hash, out *uint256.Int, hit *bool, calledByGetState bool) {
+	defer func() {
+		if !calledByGetState {
+			totalStorageMeter2.Mark(1)
+		}
+	}()
 	// If the fake storage is set, only lookup the state here(in the debugging mode)
 	if so.fakeStorage != nil {
+		*hit = true
 		*out = so.fakeStorage[*key]
 		return
 	}
@@ -174,6 +189,7 @@ func (so *stateObject) GetCommittedState(key *common.Hash, out *uint256.Int) {
 	{
 		value, cached := so.originStorage[*key]
 		if cached {
+			*hit = true
 			*out = value
 			return
 		}
@@ -182,13 +198,19 @@ func (so *stateObject) GetCommittedState(key *common.Hash, out *uint256.Int) {
 		out.Clear()
 		return
 	}
-	// Load from DB in case it is missing.
+	if !calledByGetState {
+		syncL1MissStorageMeter.Mark(1) // miss in cache
+	}
+	// Load from DB in case it is missing
+	startDb := time.Now()
 	enc, err := so.db.stateReader.ReadAccountStorage(so.address, so.data.GetIncarnation(), key)
 	if err != nil {
 		so.setError(err)
 		out.Clear()
 		return
 	}
+	endDb := time.Now()
+	so.db.markDbCost(&startDb, &endDb)
 	if enc != nil {
 		out.SetBytes(enc)
 	} else {
@@ -212,7 +234,13 @@ func (so *stateObject) SetState(key *common.Hash, value uint256.Int) {
 	}
 	// If the new value is the same as old, don't set
 	var prev uint256.Int
+
+	start := time.Now()
 	so.GetState(key, &prev)
+	end := time.Now()
+	totalSyncIOCounter.Inc((end).Sub(start).Nanoseconds())
+	totalStorageMeter.Mark(1)
+
 	if prev == value {
 		return
 	}
@@ -327,6 +355,7 @@ func (so *stateObject) Code() []byte {
 	if bytes.Equal(so.CodeHash(), emptyCodeHash) {
 		return nil
 	}
+
 	code, err := so.db.stateReader.ReadAccountCode(so.Address(), so.data.Incarnation, common.BytesToHash(so.CodeHash()))
 	if err != nil {
 		so.setError(fmt.Errorf("can't load code hash %x: %w", so.CodeHash(), err))

@@ -19,6 +19,7 @@ package core
 
 import (
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"time"
 
 	"github.com/ledgerwatch/erigon/core/systemcontracts"
@@ -41,6 +42,10 @@ import (
 
 var (
 	blockExecutionTimer = metrics2.GetOrCreateSummary("chain_execution_seconds")
+	//	txnExecutionTimer   = metrics2.GetOrCreateSummary("txn_execution_seconds")
+	txnExecutionTimer   = eth_metrics.NewRegisteredTimer("txn/execution/seconds", nil)
+	blockCommitTimer    = metrics2.GetOrCreateSummary("block_commit_seconds")
+	writeChangesetTimer = metrics2.GetOrCreateSummary("changeset_write_seconds")
 )
 
 type SyncMode string
@@ -110,6 +115,8 @@ func ExecuteBlockEphemerallyForBSC(
 	noop := state.NewNoopWriter()
 	posa, isPoSA := engine.(consensus.PoSA)
 	//fmt.Printf("====txs processing start: %d====\n", block.NumberU64())
+	var txnNUm int64
+	startTxn := time.Now()
 	for i, tx := range block.Transactions() {
 		if isPoSA {
 			if isSystemTx, err := posa.IsSystemTransaction(tx, block.Header()); err != nil {
@@ -118,6 +125,7 @@ func ExecuteBlockEphemerallyForBSC(
 				continue
 			}
 		}
+		txnNUm++
 		ibs.Prepare(tx.Hash(), block.Hash(), i)
 		writeTrace := false
 		if vmConfig.Debug && vmConfig.Tracer == nil {
@@ -149,6 +157,9 @@ func ExecuteBlockEphemerallyForBSC(
 			}
 		}
 	}
+	// avg txn cost time
+	txnCostTime := time.Since(startTxn).Nanoseconds() / int64(txnNUm)
+	txnExecutionTimer.Update(time.Duration(txnCostTime))
 
 	var newBlock *types.Block
 	var receiptSha common.Hash
@@ -199,9 +210,26 @@ func ExecuteBlockEphemerallyForBSC(
 		}
 	}
 
-	if err := ibs.CommitBlock(chainConfig.Rules(header.Number.Uint64()), stateWriter); err != nil {
+	/*
+		if err := ibs.CommitBlock(chainConfig.Rules(header.Number.Uint64()), stateWriter); err != nil {
+			return nil, fmt.Errorf("committing block %d failed: %w", header.Number.Uint64(), err)
+		} else if err := stateWriter.WriteChangeSets(); err != nil {
+			return nil, fmt.Errorf("writing changesets for block %d failed: %w", header.Number.Uint64(), err)
+		}
+	*/
+	startCommit := time.Now()
+	err := ibs.CommitBlock(chainConfig.Rules(header.Number.Uint64()), stateWriter)
+	if err == nil {
+		blockCommitTimer.UpdateDuration(startCommit)
+	} else {
 		return nil, fmt.Errorf("committing block %d failed: %w", header.Number.Uint64(), err)
-	} else if err := stateWriter.WriteChangeSets(); err != nil {
+	}
+
+	startWriteChange := time.Now()
+	err = stateWriter.WriteChangeSets()
+	if err == nil {
+		writeChangesetTimer.UpdateDuration(startWriteChange)
+	} else {
 		return nil, fmt.Errorf("writing changesets for block %d failed: %w", header.Number.Uint64(), err)
 	}
 
@@ -234,7 +262,6 @@ func ExecuteBlockEphemerally(
 	statelessExec bool, // for usage of this API via cli tools wherein some of the validations need to be relaxed.
 	getTracer func(txIndex int, txHash common.Hash) (vm.Tracer, error),
 ) (*EphemeralExecResult, error) {
-
 	defer blockExecutionTimer.UpdateDuration(time.Now())
 	block.Uncles()
 	ibs := state.New(stateReader)
@@ -261,6 +288,8 @@ func ExecuteBlockEphemerally(
 	}
 	noop := state.NewNoopWriter()
 	//fmt.Printf("====txs processing start: %d====\n", block.NumberU64())
+	var txnNUm int64
+	startTxn := time.Now()
 	for i, tx := range block.Transactions() {
 		ibs.Prepare(tx.Hash(), block.Hash(), i)
 		writeTrace := false
@@ -293,6 +322,10 @@ func ExecuteBlockEphemerally(
 			}
 		}
 	}
+
+	// avg txn cost time
+	costTime := float64(time.Since(startTxn).Nanoseconds()) / float64(txnNUm)
+	txnExecutionTimer.Update(time.Duration(costTime))
 
 	receiptSha := types.DeriveSha(receipts)
 	if !statelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {

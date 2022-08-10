@@ -2,12 +2,19 @@ package stagedsync
 
 import (
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
+	"time"
 
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/consensus"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	miningFinishTimer   = eth_metrics.NewRegisteredTimer("mining/finish/delay", nil)
+	miningFinishCounter = eth_metrics.NewRegisteredCounter("mining/finish/cost", nil)
 )
 
 type MiningFinishCfg struct {
@@ -35,6 +42,11 @@ func StageMiningFinishCfg(
 }
 
 func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit <-chan struct{}) error {
+	start := time.Now()
+	defer func() {
+		miningFinishTimer.Update(time.Since(start))
+		miningFinishCounter.Inc(time.Since(start).Nanoseconds())
+	}()
 	logPrefix := s.LogPrefix()
 	current := cfg.miningState.MiningBlock
 

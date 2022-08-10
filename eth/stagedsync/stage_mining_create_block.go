@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"io"
 	"math/big"
 	"time"
@@ -28,6 +29,11 @@ import (
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/rlp"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	miningCreateBlockTimer   = eth_metrics.NewRegisteredTimer("mining/createblock/delay", nil)
+	miningCreateBlockCounter = eth_metrics.NewRegisteredCounter("mining/createblock/cost", nil)
 )
 
 type MiningBlock struct {
@@ -96,6 +102,12 @@ func StageMiningCreateBlockCfg(db kv.RwDB, miner MiningState, chainConfig params
 // TODO:
 // - resubmitAdjustCh - variable is not implemented
 func SpawnMiningCreateBlockStage(s *StageState, tx kv.RwTx, cfg MiningCreateBlockCfg, quit <-chan struct{}) (err error) {
+	start := time.Now()
+	defer func() {
+		miningCreateBlockTimer.Update(time.Since(start))
+		miningCreateBlockCounter.Inc(time.Since(start).Nanoseconds())
+	}()
+
 	current := cfg.miner.MiningBlock
 	txPoolLocals := []common.Address{} //txPoolV2 has no concept of local addresses (yet?)
 	coinbase := cfg.miner.MiningConfig.Etherbase

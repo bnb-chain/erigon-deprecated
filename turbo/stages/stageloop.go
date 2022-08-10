@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"math/big"
 	"time"
 
@@ -32,6 +33,13 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	totalStageCommitCounter = eth_metrics.NewRegisteredCounter("stageCommit/total/cost", nil)
+	totalStageCounter       = eth_metrics.NewRegisteredCounter("stage/total/cost", nil)
+	stageCommitTimer        = eth_metrics.NewRegisteredTimer("stageCommit/delay/cost", nil)
+	stageSyncTimer          = eth_metrics.NewRegisteredTimer("stage/delay/cost", nil)
 )
 
 func SendPayloadStatus(hd *headerdownload.HeaderDownload, headBlockHash common.Hash, err error) {
@@ -81,8 +89,11 @@ func StageLoop(
 
 		// Estimate the current top height seen from the peer
 		height := hd.TopSeenHeight()
+		startStage := time.Now()
 		headBlockHash, err := StageLoopStep(ctx, db, sync, height, notifications, initialCycle, updateHead, nil)
-
+		endStage := time.Now()
+		totalStageCounter.Inc(endStage.Sub(startStage).Nanoseconds())
+		stageSyncTimer.Update(time.Since(startStage))
 		SendPayloadStatus(hd, headBlockHash, err)
 
 		if err != nil {
@@ -171,6 +182,8 @@ func StageLoopStep(
 			return headBlockHash, errTx
 		}
 		log.Info("Commit cycle", "in", time.Since(commitStart))
+		totalStageCommitCounter.Inc(time.Since(commitStart).Nanoseconds())
+		stageCommitTimer.Update(time.Since(commitStart))
 	}
 	var rotx kv.Tx
 	if rotx, err = db.BeginRo(ctx); err != nil {

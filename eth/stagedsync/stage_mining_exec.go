@@ -3,7 +3,9 @@ package stagedsync
 import (
 	"errors"
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"sync/atomic"
+	"time"
 
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
@@ -23,6 +25,11 @@ import (
 	"github.com/ledgerwatch/erigon/ethdb"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
+)
+
+var (
+	miningExecutionTimer   = eth_metrics.NewRegisteredTimer("mining/execution/delay", nil)
+	miningExecutionCounter = eth_metrics.NewRegisteredCounter("mining/execution/cost", nil)
 )
 
 type MiningExecCfg struct {
@@ -64,6 +71,12 @@ func StageMiningExecCfg(
 // TODO:
 // - resubmitAdjustCh - variable is not implemented
 func SpawnMiningExecStage(s *StageState, tx kv.RwTx, cfg MiningExecCfg, quit <-chan struct{}) error {
+	startExec := time.Now()
+	defer func() {
+		miningExecutionTimer.Update(time.Since(startExec))
+		miningExecutionCounter.Inc(time.Since(startExec).Nanoseconds())
+	}()
+
 	cfg.vmConfig.NoReceipts = false
 	logPrefix := s.LogPrefix()
 	current := cfg.miningState.MiningBlock

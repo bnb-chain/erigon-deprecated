@@ -5,12 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/cmd/utils"
 	"github.com/ledgerwatch/erigon/core"
@@ -20,6 +14,11 @@ import (
 	"github.com/ledgerwatch/erigon/rlp"
 	turboNode "github.com/ledgerwatch/erigon/turbo/node"
 	"github.com/ledgerwatch/erigon/turbo/stages"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"github.com/ledgerwatch/log/v3"
 	"github.com/urfave/cli"
@@ -211,7 +210,6 @@ func InsertChain(ethereum *eth.Ethereum, chain *core.ChainPack) error {
 	}
 
 	sentryControlServer.Hd.MarkAllVerified()
-
 	_, err := stages.StageLoopStep(ethereum.SentryCtx(), ethereum.ChainDB(), ethereum.StagedSync(), highestSeenHeader, ethereum.Notifications(), initialCycle, sentryControlServer.UpdateHead, nil)
 	if err != nil {
 		return err

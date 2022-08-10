@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
+	"time"
+
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/etl"
@@ -24,6 +27,12 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/trie"
 	"github.com/ledgerwatch/log/v3"
 	"golang.org/x/exp/slices"
+)
+
+var (
+	batchIntermediateHashTimer  = eth_metrics.NewRegisteredTimer("batch/intermediateHash/cost", nil)
+	avgIntermediateHashimer     = eth_metrics.NewRegisteredTimer("avg/intermediateHash/cost", nil)
+	miningIntermediateHashTimer = eth_metrics.NewRegisteredTimer("mining/intermediateHash/cost", nil)
 )
 
 type TrieCfg struct {
@@ -58,6 +67,19 @@ func StageTrieCfg(db kv.RwDB, checkRoot, saveNewHashesToDB, badBlockHalt bool, t
 }
 
 func SpawnIntermediateHashesStage(s *StageState, u Unwinder, tx kv.RwTx, cfg TrieCfg, ctx context.Context) (common.Hash, error) {
+	startTime := time.Now()
+	var batchSize uint64
+	defer func() {
+		batchIntermediateHashTimer.Update(time.Since(startTime))
+		if batchSize >= 1 {
+			avgStageCost := time.Since(startTime).Nanoseconds() / int64(batchSize)
+			avgIntermediateHashimer.Update(time.Duration(avgStageCost))
+		}
+		if len(s.state.stages) <= 5 {
+			miningIntermediateHashTimer.Update(time.Since(startTime))
+		}
+	}()
+
 	quit := ctx.Done()
 	useExternalTx := tx != nil
 	if !useExternalTx {
@@ -98,6 +120,7 @@ func SpawnIntermediateHashesStage(s *StageState, u Unwinder, tx kv.RwTx, cfg Tri
 	if to > s.BlockNumber+16 {
 		log.Info(fmt.Sprintf("[%s] Generating intermediate hashes", logPrefix), "from", s.BlockNumber, "to", to)
 	}
+	batchSize = to - s.BlockNumber + 1
 	var root common.Hash
 	tooBigJump := to > s.BlockNumber && to-s.BlockNumber > 100_000 // RetainList is in-memory structure and it will OOM if jump is too big, such big jump anyway invalidate most of existing Intermediate hashes
 	if s.BlockNumber == 0 || tooBigJump {

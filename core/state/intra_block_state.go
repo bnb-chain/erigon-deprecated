@@ -19,7 +19,9 @@ package state
 
 import (
 	"fmt"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"sort"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon/common"
@@ -30,6 +32,19 @@ import (
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/turbo/trie"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	syncL1MissAccountMeter = eth_metrics.NewRegisteredMeter("account/miss/count", nil)
+	syncL1MissStorageMeter = eth_metrics.NewRegisteredMeter("storage/miss/count", nil)
+	totalAccountMeter      = eth_metrics.NewRegisteredMeter("account/total/count", nil)
+	totalAccountMeter2     = eth_metrics.NewRegisteredMeter("account/total/count2", nil)
+
+	totalSyncIOCounter = eth_metrics.NewRegisteredCounter("io/read/total/cost", nil)
+	totalSyncDbCounter = eth_metrics.NewRegisteredCounter("mdbx/read/total/cost", nil)
+	totalStorageMeter  = eth_metrics.NewRegisteredMeter("storage/total/count", nil)
+	totalStorageMeter2 = eth_metrics.NewRegisteredMeter("storage/total/count2", nil)
+	totalDbMeteter     = eth_metrics.NewRegisteredMeter("mdbx/total/count", nil)
 )
 
 type revision struct {
@@ -203,6 +218,22 @@ func (sdb *IntraBlockState) Empty(addr common.Address) bool {
 	return so == nil || so.deleted || so.empty()
 }
 
+func (s *IntraBlockState) markMetrics(start *time.Time, end *time.Time, reachStorage bool) {
+	// record metrics of syncing main process
+	totalSyncIOCounter.Inc((*end).Sub(*start).Nanoseconds())
+	totalAccountMeter.Mark(1)
+	if reachStorage {
+		totalStorageMeter.Mark(1)
+	}
+}
+
+func (s *IntraBlockState) markDbCost(start *time.Time, end *time.Time) {
+	// db hit
+	totalDbMeteter.Mark(1)
+	// db total cost of history
+	totalSyncDbCounter.Inc((*end).Sub(*start).Nanoseconds())
+}
+
 // GetBalance retrieves the balance from the given address or 0 if object not found
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetBalance(addr common.Address) *uint256.Int {
@@ -212,7 +243,10 @@ func (sdb *IntraBlockState) GetBalance(addr common.Address) *uint256.Int {
 			fmt.Println("CaptureAccountRead err", err)
 		}
 	}
+	start := time.Now()
 	stateObject := sdb.getStateObject(addr)
+	end := time.Now()
+	sdb.markMetrics(&start, &end, false)
 	if stateObject != nil && !stateObject.deleted {
 		return stateObject.Balance()
 	}
@@ -227,7 +261,10 @@ func (sdb *IntraBlockState) GetNonce(addr common.Address) uint64 {
 			fmt.Println("CaptureAccountRead err", err)
 		}
 	}
+	start := time.Now()
 	stateObject := sdb.getStateObject(addr)
+	end := time.Now()
+	sdb.markMetrics(&start, &end, false)
 	if stateObject != nil && !stateObject.deleted {
 		return stateObject.Nonce()
 	}
@@ -248,7 +285,13 @@ func (sdb *IntraBlockState) GetCode(addr common.Address) []byte {
 			fmt.Println("CaptureAccountRead err", err)
 		}
 	}
+	start := time.Now()
 	stateObject := sdb.getStateObject(addr)
+	defer func() {
+		end := time.Now()
+		sdb.markMetrics(&start, &end, false)
+	}()
+
 	if stateObject != nil && !stateObject.deleted {
 		if sdb.trace {
 			fmt.Printf("GetCode %x, returned %d\n", addr, len(stateObject.Code()))
@@ -269,17 +312,29 @@ func (sdb *IntraBlockState) GetCodeSize(addr common.Address) int {
 			fmt.Println("CaptureAccountRead err", err)
 		}
 	}
+	start := time.Now()
+	var endTime time.Time
+	defer func() {
+		endTime = time.Now()
+		sdb.markMetrics(&start, &endTime, false)
+	}()
+
 	stateObject := sdb.getStateObject(addr)
+
 	if stateObject == nil || stateObject.deleted {
 		return 0
 	}
 	if stateObject.code != nil {
 		return len(stateObject.code)
 	}
+	startDb := time.Now()
 	len, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, common.BytesToHash(stateObject.CodeHash()))
 	if err != nil {
 		sdb.setErrorUnsafe(err)
 	}
+	endDb := time.Now()
+	sdb.markDbCost(&startDb, &endDb)
+
 	return len
 }
 
@@ -291,7 +346,10 @@ func (sdb *IntraBlockState) GetCodeHash(addr common.Address) common.Hash {
 			fmt.Println("CaptureAccountRead err", err)
 		}
 	}
+	start := time.Now()
 	stateObject := sdb.getStateObject(addr)
+	end := time.Now()
+	sdb.markMetrics(&start, &end, false)
 	if stateObject == nil || stateObject.deleted {
 		return common.Hash{}
 	}
@@ -301,9 +359,16 @@ func (sdb *IntraBlockState) GetCodeHash(addr common.Address) common.Hash {
 // GetState retrieves a value from the given account's storage trie.
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetState(addr common.Address, key *common.Hash, value *uint256.Int) {
+	start := time.Now()
+	var end time.Time
+	needStorage := false
+	defer sdb.markMetrics(&start, &end, needStorage)
 	stateObject := sdb.getStateObject(addr)
+	end = time.Now()
 	if stateObject != nil && !stateObject.deleted {
+		needStorage = true
 		stateObject.GetState(key, value)
+		end = time.Now()
 	} else {
 		value.Clear()
 	}
@@ -312,9 +377,17 @@ func (sdb *IntraBlockState) GetState(addr common.Address, key *common.Hash, valu
 // GetCommittedState retrieves a value from the given account's committed storage trie.
 // DESCRIBED: docs/programmers_guide/guide.md#address---identifier-of-an-account
 func (sdb *IntraBlockState) GetCommittedState(addr common.Address, key *common.Hash, value *uint256.Int) {
+	start := time.Now()
+	var end time.Time
+	needStorage := false
+	defer sdb.markMetrics(&start, &end, needStorage)
 	stateObject := sdb.getStateObject(addr)
+	end = time.Now()
+	hit := false
 	if stateObject != nil && !stateObject.deleted {
-		stateObject.GetCommittedState(key, value)
+		needStorage = true
+		stateObject.GetCommittedState(key, value, &hit, false)
+		end = time.Now()
 	} else {
 		value.Clear()
 	}
@@ -506,11 +579,13 @@ func (sdb *IntraBlockState) Suicide(addr common.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr common.Address) (stateObject *stateObject) {
+	totalAccountMeter2.Mark(1)
 	// Prefer 'live' objects.
 	if obj := sdb.stateObjects[addr]; obj != nil {
 		return obj
 	}
 
+	syncL1MissAccountMeter.Mark(1)
 	// Load the object from the database.
 	if _, ok := sdb.nilAccounts[addr]; ok {
 		if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
@@ -518,11 +593,14 @@ func (sdb *IntraBlockState) getStateObject(addr common.Address) (stateObject *st
 		}
 		return nil
 	}
+	startDB := time.Now()
 	account, err := sdb.stateReader.ReadAccountData(addr)
 	if err != nil {
 		sdb.setErrorUnsafe(err)
 		return nil
 	}
+	endDB := time.Now()
+	sdb.markDbCost(&startDB, &endDB)
 	if account == nil {
 		sdb.nilAccounts[addr] = struct{}{}
 		if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
@@ -548,7 +626,10 @@ func (sdb *IntraBlockState) setStateObject(addr common.Address, object *stateObj
 
 // Retrieve a state object or create a new state object if nil.
 func (sdb *IntraBlockState) GetOrNewStateObject(addr common.Address) *stateObject {
+	start := time.Now()
 	stateObject := sdb.getStateObject(addr)
+	end := time.Now()
+	sdb.markMetrics(&start, &end, false)
 	if stateObject == nil || stateObject.deleted {
 		stateObject = sdb.createObject(addr, stateObject /* previous */)
 	}
@@ -601,20 +682,26 @@ func (sdb *IntraBlockState) CreateAccount(addr common.Address, contractCreation 
 	}
 
 	var prevInc uint64
+	start := time.Now()
 	previous := sdb.getStateObject(addr)
 	if contractCreation {
 		if previous != nil && previous.suicided {
 			prevInc = previous.data.Incarnation
 		} else {
+			startDb := time.Now()
 			inc, err := sdb.stateReader.ReadAccountIncarnation(addr)
 			if sdb.trace && err != nil {
 				log.Error("error while ReadAccountIncarnation", "err", err)
 			}
+			endDb := time.Now()
+			sdb.markDbCost(&startDb, &endDb)
 			if err == nil {
 				prevInc = inc
 			}
 		}
 	}
+	endRead := time.Now()
+	sdb.markMetrics(&start, &endRead, false)
 
 	newObj := sdb.createObject(addr, previous)
 	if previous != nil {
