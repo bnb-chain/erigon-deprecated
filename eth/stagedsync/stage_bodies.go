@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	ethmetrics "github.com/ethereum/go-ethereum/metrics"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/cmd/state/exec22"
@@ -20,6 +21,11 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/stages/bodydownload"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
 	"github.com/ledgerwatch/log/v3"
+)
+
+var (
+	batchBodiesTimer = ethmetrics.NewRegisteredTimer("batch_bodies_cost", nil)
+	avgBodiesTimer   = ethmetrics.NewRegisteredTimer("avg_bodies_cost", nil)
 )
 
 type BodiesCfg struct {
@@ -65,6 +71,11 @@ func BodiesForward(
 	test bool, // Set to true in tests, allows the stage to fail rather than wait indefinitely
 	firstCycle bool,
 ) error {
+	startTime := time.Now()
+	var batchSize uint64
+	defer func() {
+		stageSyncMetrics(batchBodiesTimer, avgBodiesTimer, startTime, batchSize)
+	}()
 	var doUpdate bool
 	if cfg.snapshots != nil && s.BlockNumber < cfg.snapshots.BlocksAvailable() {
 		s.BlockNumber = cfg.snapshots.BlocksAvailable()
@@ -267,6 +278,9 @@ Loop:
 	if bodyProgress > s.BlockNumber+16 {
 		log.Info(fmt.Sprintf("[%s] Processed", logPrefix), "highest", bodyProgress)
 	}
+
+	//log.Info(fmt.Sprintf("Stage Sync Bodies Metrics, From [%d], To [%d]", s.BlockNumber, bodyProgress))
+	batchSize = bodyProgress - s.BlockNumber + 1
 	return nil
 }
 

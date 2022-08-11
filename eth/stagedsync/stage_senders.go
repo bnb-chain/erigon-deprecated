@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	ethmetrics "github.com/ethereum/go-ethereum/metrics"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/cmp"
 	"github.com/ledgerwatch/erigon-lib/common/length"
@@ -26,6 +27,11 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/ledgerwatch/secp256k1"
+)
+
+var (
+	batchSendersTimer = ethmetrics.NewRegisteredTimer("batch_senders_cost", nil)
+	avgSendersTimer   = ethmetrics.NewRegisteredTimer("avg_senders_cost", nil)
 )
 
 type SendersCfg struct {
@@ -64,6 +70,11 @@ func StageSendersCfg(db kv.RwDB, chainCfg *params.ChainConfig, badBlockHalt bool
 }
 
 func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context) error {
+	startTime := time.Now()
+	var batchSize uint64
+	defer func() {
+		stageSyncMetrics(batchSendersTimer, avgSendersTimer, startTime, batchSize)
+	}()
 	if cfg.blockRetire != nil && cfg.blockRetire.Snapshots() != nil && cfg.blockRetire.Snapshots().Cfg().Enabled && s.BlockNumber < cfg.blockRetire.Snapshots().BlocksAvailable() {
 		s.BlockNumber = cfg.blockRetire.Snapshots().BlocksAvailable()
 	}
@@ -117,7 +128,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 			return err
 		}
 
-		if currentHeaderIdx >= to-s.BlockNumber { // if header stage is ehead of body stage
+		if currentHeaderIdx >= to-s.BlockNumber { // if header stage is ahead of body stage
 			break
 		}
 
@@ -287,6 +298,9 @@ Loop:
 			return err
 		}
 	}
+
+	batchSize = to - s.BlockNumber + 1
+	//log.Info(fmt.Sprintf("Stage Sync Senders Metrics, From [%d], To [%d]", s.BlockNumber, to))
 	return nil
 }
 

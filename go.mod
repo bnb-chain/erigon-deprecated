@@ -3,7 +3,9 @@ module github.com/ledgerwatch/erigon
 go 1.18
 
 require (
-	github.com/ledgerwatch/erigon-lib v0.0.0-20220831030346-8225fa72f3e4
+	github.com/ethereum/go-ethereum v1.10.21
+	github.com/gorilla/mux v1.7.3
+	github.com/ledgerwatch/erigon-lib v0.0.0-20220808031639-342fb2579c49
 	github.com/ledgerwatch/erigon-snapshot v1.0.1-0.20220809023834-6309df4da4b1
 	github.com/ledgerwatch/log/v3 v3.4.1
 	github.com/ledgerwatch/secp256k1 v1.0.0
@@ -21,10 +23,10 @@ require (
 	github.com/benesch/cgosymbolizer v0.0.0-20190515212042-bec6fe6e597b
 	github.com/btcsuite/btcd v0.22.0-beta
 	github.com/c2h5oh/datasize v0.0.0-20220606134207-859f65c6625b
-	github.com/consensys/gnark-crypto v0.4.0
+	github.com/consensys/gnark-crypto v0.4.1-0.20210426202927-39ac3d4b3f1f
 	github.com/davecgh/go-spew v1.1.1
-	github.com/deckarep/golang-set v0.0.0-20180603214616-504e848d77ea
-	github.com/dop251/goja v0.0.0-20211011172007-d99e4b8cbf48
+	github.com/deckarep/golang-set v1.8.0
+	github.com/dop251/goja v0.0.0-20220405120441-9037c2b61cbf
 	github.com/edsrzf/mmap-go v1.1.0
 	github.com/emicklei/dot v1.0.0
 	github.com/emirpasic/gods v1.18.1
@@ -170,6 +172,11 @@ require (
 )
 
 require (
+	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
+	github.com/go-ole/go-ole v1.2.1 // indirect
+	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
+	github.com/tklauser/go-sysconf v0.3.5 // indirect
+	github.com/tklauser/numcpus v0.2.2 // indirect
 	gotest.tools/v3 v3.3.0 // indirect
 )

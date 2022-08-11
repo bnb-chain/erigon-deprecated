@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	ethmetrics "github.com/ethereum/go-ethereum/metrics"
 	"github.com/holiman/uint256"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/cmp"
@@ -38,6 +39,11 @@ import (
 // The number of blocks we should be able to re-org sub-second on commodity hardware.
 // See https://hackmd.io/TdJtNs0dS56q-In8h-ShSg
 const ShortPoSReorgThresholdBlocks = 10
+
+var (
+	batchHeadersTimer = ethmetrics.NewRegisteredTimer("batch_headers_cost", nil)
+	avgHeadersTimer   = ethmetrics.NewRegisteredTimer("avg_headers_cost", nil)
+)
 
 type HeadersCfg struct {
 	db                kv.RwDB
@@ -108,6 +114,7 @@ func SpawnStageHeaders(
 	initialCycle bool,
 	test bool, // Set to true in tests, allows the stage to fail rather than wait indefinitely
 ) error {
+	startTime := time.Now()
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		var err error
@@ -160,9 +167,9 @@ func SpawnStageHeaders(
 
 	if transitionedToPoS {
 		libcommon.SafeClose(cfg.hd.QuitPoWMining)
-		return HeadersPOS(s, u, ctx, tx, cfg, initialCycle, test, useExternalTx)
+		return HeadersPOS(s, u, ctx, tx, cfg, initialCycle, test, useExternalTx, startTime)
 	} else {
-		return HeadersPOW(s, u, ctx, tx, cfg, initialCycle, test, useExternalTx)
+		return HeadersPOW(s, u, ctx, tx, cfg, initialCycle, test, useExternalTx, startTime)
 	}
 }
 
@@ -177,7 +184,12 @@ func HeadersPOS(
 	initialCycle bool,
 	test bool,
 	useExternalTx bool,
+	startTime time.Time,
 ) error {
+	var batchSize uint64
+	defer func() {
+		stageSyncMetrics(batchHeadersTimer, avgHeadersTimer, startTime, batchSize)
+	}()
 	if initialCycle {
 		// Let execution and other stages to finish before waiting for CL
 		return nil
@@ -244,7 +256,19 @@ func HeadersPOS(
 		}
 	}
 
+	batchSize = headerInserter.GetHighest() - s.BlockNumber + 1
+	//log.Info(fmt.Sprintf("Stage Sync POS Headers Metrics, From [%d], To [%d]", s.BlockNumber,
+	//	headerInserter.GetHighest()))
 	return nil
+}
+
+// stageSyncMetrics export batch and average metrics
+func stageSyncMetrics(batchMetricTimer, avgMetricTimer ethmetrics.Timer, startTime time.Time, batchSize uint64) {
+	batchMetricTimer.Update(time.Since(startTime))
+	if batchSize >= 1 {
+		avgCost := time.Since(startTime).Nanoseconds() / int64(batchSize)
+		avgMetricTimer.Update(time.Duration(avgCost))
+	}
 }
 
 func writeForkChoiceHashes(
@@ -749,9 +773,14 @@ func HeadersPOW(
 	initialCycle bool,
 	test bool, // Set to true in tests, allows the stage to fail rather than wait indefinitely
 	useExternalTx bool,
+	startTime time.Time,
 ) error {
 	var headerProgress uint64
 	var err error
+	var batchSize uint64
+	defer func() {
+		stageSyncMetrics(batchHeadersTimer, avgHeadersTimer, startTime, batchSize)
+	}()
 
 	if err = cfg.hd.ReadProgressFromDb(tx); err != nil {
 		return err
@@ -943,6 +972,9 @@ Loop:
 	// We do not print the following line if the stage was interrupted
 	log.Info(fmt.Sprintf("[%s] Processed", logPrefix), "highest inserted", headerInserter.GetHighest(), "age", common.PrettyAge(time.Unix(int64(headerInserter.GetHighestTimestamp()), 0)))
 
+	batchSize = headerInserter.GetHighest() - s.BlockNumber + 1
+	//log.Info(fmt.Sprintf("Stage Sync POW Headers Metrics, From [%d], To [%d]", s.BlockNumber,
+	//	headerInserter.GetHighest()))
 	return nil
 }
 

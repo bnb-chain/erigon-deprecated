@@ -53,6 +53,7 @@ func (s *StageState) Update(db kv.Putter, newBlockNum uint64) error {
 	}
 	return stages.SaveStageProgress(db, s.ID, newBlockNum)
 }
+
 func (s *StageState) UpdatePrune(db kv.Putter, blockNum uint64) error {
 	return stages.SaveStagePruneProgress(db, s.ID, blockNum)
 }
@@ -98,6 +99,7 @@ func (s *PruneState) LogPrefix() string { return s.state.LogPrefix() + " Prune" 
 func (s *PruneState) Done(db kv.Putter) error {
 	return stages.SaveStagePruneProgress(db, s.ID, s.ForwardProgress)
 }
+
 func (s *PruneState) DoneAt(db kv.Putter, blockNum uint64) error {
 	return stages.SaveStagePruneProgress(db, s.ID, blockNum)
 }
