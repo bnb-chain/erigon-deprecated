@@ -245,6 +245,11 @@ func MiningStep(ctx context.Context, kv kv.RwDB, mining *stagedsync.Sync) (err e
 		if rec := recover(); rec != nil {
 			err = fmt.Errorf("%+v, trace: %s", rec, dbg.Stack())
 		}
+<<<<<<< HEAD
+=======
+		miningTotalCounter.Inc(time.Since(startMiningTime).Nanoseconds())
+		miningTotalCost.UpdateDuration(startMiningTime)
+>>>>>>> e16c2bd0f (init metrics)
 	}() // avoid crash because Erigon's core does many things
 
 	tx, err := kv.BeginRo(ctx)

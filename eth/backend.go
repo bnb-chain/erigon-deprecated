@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ledgerwatch/erigon/miningmetrics"
 	"io/fs"
 	"math/big"
 	"os"
@@ -716,6 +717,7 @@ func (s *Ethereum) StartMining(pctx context.Context, db kv.RwDB, mining *stageds
 		return nil
 	}
 
+	miningmetrics.InitMiningTime()
 	// Configure the local mining address
 	eb, err := s.Etherbase()
 	if err != nil {
