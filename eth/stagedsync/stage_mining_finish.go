@@ -2,8 +2,9 @@ package stagedsync
 
 import (
 	"fmt"
-	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"time"
+
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/consensus"
@@ -15,6 +16,13 @@ import (
 var (
 	miningFinishTimer   = eth_metrics.NewRegisteredTimer("mining/finish/delay", nil)
 	miningFinishCounter = eth_metrics.NewRegisteredCounter("mining/finish/cost", nil)
+	gasUsedCount        = eth_metrics.NewRegisteredGauge("mining/finish/gas", nil)
+	gasUsedCounter      = eth_metrics.NewRegisteredCounter("mining/finish/gastotal", nil)
+
+	miningTotalTimer   = metrics2.GetOrCreateHistogram("mining_total_seconds")
+	miningTotalCounter = eth_metrics.NewRegisteredCounter("mining/total/counter", nil)
+	miningFinishTps    = eth_metrics.NewRegisteredGauge("mining/finish/tps", nil)
+	miningFinishMeter  = metrics2.GetOrCreateHistogram("mining_finish_seconds")
 )
 
 type MiningFinishCfg struct {
@@ -46,6 +54,13 @@ func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit
 	defer func() {
 		miningFinishTimer.Update(time.Since(start))
 		miningFinishCounter.Inc(time.Since(start).Nanoseconds())
+		if txnNum > 0 {
+			txnTps := float64(txnNum) / float64(time.Since(miningmetrics.GetMiningTime()).Milliseconds())
+			miningFinishTps.Update(int64(txnTps * 1000))
+			miningFinishMeter.UpdateDuration(start)
+		}
+		miningTotalCounter.Inc(int64(time.Since(miningmetrics.GetMiningTime()).Nanoseconds()))
+		miningTotalTimer.UpdateDuration(miningmetrics.GetMiningTime())
 	}()
 	logPrefix := s.LogPrefix()
 	current := cfg.miningState.MiningBlock
@@ -79,6 +94,9 @@ func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit
 	cfg.miningState.PendingResultCh <- block
 
 	if block.Transactions().Len() > 0 {
+		txnNum = int64(block.Transactions().Len())
+		gasUsedCount.Update(int64(block.GasUsed()))
+		gasUsedCounter.Inc(int64(block.GasUsed()))
 		log.Info(fmt.Sprintf("[%s] block ready for seal", logPrefix),
 			"block_num", block.NumberU64(),
 			"transactions", block.Transactions().Len(),
