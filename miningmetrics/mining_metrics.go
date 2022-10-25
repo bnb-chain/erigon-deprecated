@@ -7,6 +7,7 @@ var StartMiningTime time.Time
 func InitMiningTime() {
 	StartMiningTime = time.Now()
 }
+
 func UpdateMiningTime(startTime time.Time) {
 	StartMiningTime = startTime
 }

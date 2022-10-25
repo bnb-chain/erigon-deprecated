@@ -3,6 +3,7 @@ package stagedsync
 import (
 	"errors"
 	"fmt"
+	metrics2 "github.com/VictoriaMetrics/metrics"
 	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,7 @@ import (
 var (
 	miningExecutionTimer   = eth_metrics.NewRegisteredTimer("mining/execution/delay", nil)
 	miningExecutionCounter = eth_metrics.NewRegisteredCounter("mining/execution/cost", nil)
+	miningExecutionMeter   = metrics2.GetOrCreateHistogram("mining_execution_seconds")
 )
 
 type MiningExecCfg struct {
@@ -75,6 +77,7 @@ func SpawnMiningExecStage(s *StageState, tx kv.RwTx, cfg MiningExecCfg, quit <-c
 	defer func() {
 		miningExecutionTimer.Update(time.Since(startExec))
 		miningExecutionCounter.Inc(time.Since(startExec).Nanoseconds())
+		miningExecutionMeter.UpdateDuration(startExec)
 	}()
 
 	cfg.vmConfig.NoReceipts = false

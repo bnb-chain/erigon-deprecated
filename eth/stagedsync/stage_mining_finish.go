@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	metrics2 "github.com/VictoriaMetrics/metrics"
 	eth_metrics "github.com/ethereum/go-ethereum/metrics"
+	"github.com/ledgerwatch/erigon/miningmetrics"
 
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/consensus"
@@ -51,6 +53,7 @@ func StageMiningFinishCfg(
 
 func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit <-chan struct{}) error {
 	start := time.Now()
+	txnNum := int64(0)
 	defer func() {
 		miningFinishTimer.Update(time.Since(start))
 		miningFinishCounter.Inc(time.Since(start).Nanoseconds())

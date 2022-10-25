@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	metrics2 "github.com/VictoriaMetrics/metrics"
 	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"io"
 	"math/big"
@@ -34,6 +35,7 @@ import (
 var (
 	miningCreateBlockTimer   = eth_metrics.NewRegisteredTimer("mining/createblock/delay", nil)
 	miningCreateBlockCounter = eth_metrics.NewRegisteredCounter("mining/createblock/cost", nil)
+	miningCreateBlockMeter   = metrics2.GetOrCreateHistogram("mining_createblock_seconds")
 )
 
 type MiningBlock struct {
@@ -106,6 +108,7 @@ func SpawnMiningCreateBlockStage(s *StageState, tx kv.RwTx, cfg MiningCreateBloc
 	defer func() {
 		miningCreateBlockTimer.Update(time.Since(start))
 		miningCreateBlockCounter.Inc(time.Since(start).Nanoseconds())
+		miningCreateBlockMeter.UpdateDuration(start)
 	}()
 
 	current := cfg.miner.MiningBlock

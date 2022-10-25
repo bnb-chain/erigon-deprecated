@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	metrics2 "github.com/VictoriaMetrics/metrics"
 	"math/bits"
 	"time"
 
@@ -33,6 +34,7 @@ var (
 	batchIntermediateHashTimer  = eth_metrics.NewRegisteredTimer("batch/intermediateHash/cost", nil)
 	avgIntermediateHashimer     = eth_metrics.NewRegisteredTimer("avg/intermediateHash/cost", nil)
 	miningIntermediateHashTimer = eth_metrics.NewRegisteredTimer("mining/intermediateHash/cost", nil)
+	miningIntermediateHashMeter = metrics2.GetOrCreateHistogram("mining_intermediateHash_seconds")
 )
 
 type TrieCfg struct {
@@ -77,6 +79,7 @@ func SpawnIntermediateHashesStage(s *StageState, u Unwinder, tx kv.RwTx, cfg Tri
 		}
 		if len(s.state.stages) <= 5 {
 			miningIntermediateHashTimer.Update(time.Since(startTime))
+			miningIntermediateHashMeter.UpdateDuration(startTime)
 		}
 	}()
 

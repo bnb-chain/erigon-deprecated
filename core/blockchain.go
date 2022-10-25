@@ -158,8 +158,10 @@ func ExecuteBlockEphemerallyForBSC(
 		}
 	}
 	// avg txn cost time
-	txnCostTime := time.Since(startTxn).Nanoseconds() / int64(txnNUm)
-	txnExecutionTimer.Update(time.Duration(txnCostTime))
+  if txnNUm != 0 {
+    txnCostTime := time.Since(startTxn).Nanoseconds() / int64(txnNUm)
+    txnExecutionTimer.Update(time.Duration(txnCostTime))
+  }
 
 	var newBlock *types.Block
 	var receiptSha common.Hash

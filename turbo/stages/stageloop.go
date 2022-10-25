@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	eth_metrics "github.com/ethereum/go-ethereum/metrics"
 	"math/big"
 	"time"
+
+	metrics2 "github.com/VictoriaMetrics/metrics"
+	eth_metrics "github.com/ethereum/go-ethereum/metrics"
+	"github.com/ledgerwatch/erigon/miningmetrics"
 
 	"github.com/holiman/uint256"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
@@ -40,6 +43,9 @@ var (
 	totalStageCounter       = eth_metrics.NewRegisteredCounter("stage/total/cost", nil)
 	stageCommitTimer        = eth_metrics.NewRegisteredTimer("stageCommit/delay/cost", nil)
 	stageSyncTimer          = eth_metrics.NewRegisteredTimer("stage/delay/cost", nil)
+	// record a complete mining overhead
+	miningTotalCounter = eth_metrics.NewRegisteredCounter("mining/finish/cost", nil)
+	miningTotalCost    = metrics2.GetOrCreateHistogram("mining_total_seconds")
 )
 
 func SendPayloadStatus(hd *headerdownload.HeaderDownload, headBlockHash common.Hash, err error) {
@@ -241,15 +247,15 @@ func StageLoopStep(
 }
 
 func MiningStep(ctx context.Context, kv kv.RwDB, mining *stagedsync.Sync) (err error) {
+	startMiningTime := time.Now()
+	miningmetrics.UpdateMiningTime(startMiningTime)
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = fmt.Errorf("%+v, trace: %s", rec, dbg.Stack())
 		}
-<<<<<<< HEAD
-=======
-		miningTotalCounter.Inc(time.Since(startMiningTime).Nanoseconds())
-		miningTotalCost.UpdateDuration(startMiningTime)
->>>>>>> e16c2bd0f (init metrics)
+		miningTotalCounter.Inc(time.Since(miningmetrics.GetMiningTime()).Nanoseconds())
+		miningTotalCost.UpdateDuration(miningmetrics.GetMiningTime())
+
 	}() // avoid crash because Erigon's core does many things
 
 	tx, err := kv.BeginRo(ctx)

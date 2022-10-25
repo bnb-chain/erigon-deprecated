@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	metrics2 "github.com/VictoriaMetrics/metrics"
 	"runtime"
 	"time"
 
@@ -29,6 +30,7 @@ var (
 	batchHashStateTimer = eth_metrics.NewRegisteredTimer("batch/hashstate/cost", nil)
 	avgHashStateTimer   = eth_metrics.NewRegisteredTimer("avg/hashstate/cost", nil)
 	miningHashTimer     = eth_metrics.NewRegisteredTimer("mining/hashstate/cost", nil)
+	miningHashMeter     = metrics2.GetOrCreateHistogram("mining_hashstate_seconds")
 )
 
 type HashStateCfg struct {
@@ -61,6 +63,7 @@ func SpawnHashStateStage(s *StageState, tx kv.RwTx, cfg HashStateCfg, ctx contex
 		}
 		if len(s.state.stages) <= 5 {
 			miningHashTimer.Update(time.Since(startTime))
+			miningHashMeter.UpdateDuration(startTime)
 		}
 	}()
 
