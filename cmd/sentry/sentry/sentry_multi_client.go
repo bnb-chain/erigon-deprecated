@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	mapset "github.com/deckarep/golang-set"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/common/dbg"
 	"github.com/ledgerwatch/erigon-lib/direct"
@@ -20,7 +21,7 @@ import (
 	proto_sentry "github.com/ledgerwatch/erigon-lib/gointerfaces/sentry"
 	proto_types "github.com/ledgerwatch/erigon-lib/gointerfaces/types"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/cmd/hack/tool/fromdb"
+	"github.com/ledgerwatch/erigon-lib/kv/kvcfg"
 	"github.com/ledgerwatch/log/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
@@ -252,18 +253,51 @@ type MultiClient struct {
 	nodeName      string
 	sentries      []direct.SentryClient
 	headHeight    uint64
+	headTime      uint64
 	headHash      common.Hash
 	headTd        *uint256.Int
 	ChainConfig   *params.ChainConfig
-	forks         []uint64
+	heightForks   []uint64
+	timeForks     []uint64
 	genesisHash   common.Hash
 	networkId     uint64
 	db            kv.RwDB
 	Engine        consensus.Engine
 	blockReader   services.HeaderAndCanonicalReader
 	logPeerInfo   bool
+	passivePeers  bool
 
-	historyV3 bool
+	historyV3  bool
+	knownVotes *knownCache // Set of vote hashes known to be known by this peer
+}
+
+// knownCache is a cache for known hashes.
+type knownCache struct {
+	hashes mapset.Set
+	max    int
+}
+
+// max is a helper function which returns the larger of the two given integers.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// Add adds a list of elements to the set.
+func (k *knownCache) Add(hashes ...common.Hash) {
+	for k.hashes.Cardinality() > max(0, k.max-len(hashes)) {
+		k.hashes.Pop()
+	}
+	for _, hash := range hashes {
+		k.hashes.Add(hash)
+	}
+}
+
+// Contains returns whether the given item is in the set.
+func (k *knownCache) Contains(hash common.Hash) bool {
+	return k.hashes.Contains(hash)
 }
 
 func NewMultiClient(
@@ -279,7 +313,7 @@ func NewMultiClient(
 	logPeerInfo bool,
 	forkValidator *engineapi.ForkValidator,
 ) (*MultiClient, error) {
-	historyV3 := fromdb.HistoryV3(db)
+	historyV3 := kvcfg.HistoryV3.FromDB(db)
 
 	hd := headerdownload.NewHeaderDownload(
 		512,       /* anchorLimit */
@@ -307,14 +341,15 @@ func NewMultiClient(
 		logPeerInfo:   logPeerInfo,
 		forkValidator: forkValidator,
 		historyV3:     historyV3,
+		passivePeers:  chainConfig.TerminalTotalDifficultyPassed,
 	}
 	cs.ChainConfig = chainConfig
-	cs.forks = forkid.GatherForks(cs.ChainConfig)
+	cs.heightForks, cs.timeForks = forkid.GatherForks(cs.ChainConfig)
 	cs.genesisHash = genesisHash
 	cs.networkId = networkID
 	var err error
 	err = db.View(context.Background(), func(tx kv.Tx) error {
-		cs.headHeight, cs.headHash, cs.headTd, err = cs.Bd.UpdateFromDb(tx)
+		cs.headHeight, cs.headTime, cs.headHash, cs.headTd, err = cs.Bd.UpdateFromDb(tx)
 		return err
 	})
 	return cs, err
@@ -387,7 +422,56 @@ func (cs *MultiClient) blockHeaders66(ctx context.Context, in *proto_sentry.Inbo
 	return cs.blockHeaders(ctx, pkt.BlockHeadersPacket, rlpStream, in.PeerId, sentry)
 }
 
+func (cs *MultiClient) voteMessage68(ctx context.Context, in *proto_sentry.InboundMessage, sentry direct.SentryClient) error {
+	// Parse the entire packet from scratch
+	var pkt eth.VotesPacket
+	if err := rlp.DecodeBytes(in.Data, &pkt); err != nil {
+		return fmt.Errorf("decode VoteMessage68: %w", err)
+	}
+
+	if err := rlp.DecodeBytes(in.Data, &pkt); err != nil {
+		return fmt.Errorf("decode VoteMessage68: %w", err)
+	}
+	for _, vote := range pkt.Votes {
+		voteHash := vote.Hash()
+		if cs.knownVotes.Contains(voteHash) {
+			continue
+		}
+		cs.knownVotes.Add(voteHash)
+		b, err := rlp.EncodeToBytes(&pkt)
+		if err != nil {
+			return fmt.Errorf("encode header request: %w", err)
+		}
+		outreq := proto_sentry.SendMessageByIdRequest{
+			PeerId: in.PeerId,
+			Data: &proto_sentry.OutboundMessageData{
+				Id:   proto_sentry.MessageId_VOTE_MESSAGE_68,
+				Data: b,
+			},
+		}
+
+		if _, err = sentry.SendMessageById(ctx, &outreq, &grpc.EmptyCallOption{}); err != nil {
+			if isPeerNotFoundErr(err) {
+				continue
+			}
+			return fmt.Errorf("send voteMessage: %w", err)
+		}
+	}
+	return nil
+}
+
 func (cs *MultiClient) blockHeaders(ctx context.Context, pkt eth.BlockHeadersPacket, rlpStream *rlp.Stream, peerID *proto_types.H512, sentry direct.SentryClient) error {
+	if len(pkt) == 0 {
+		outreq := proto_sentry.PeerUselessRequest{
+			PeerId: peerID,
+		}
+		if _, err := sentry.PeerUseless(ctx, &outreq, &grpc.EmptyCallOption{}); err != nil {
+			return fmt.Errorf("sending peer useless request: %v", err)
+		}
+		log.Debug("Requested removal of peer for empty header response", "peerId", fmt.Sprintf("%x", ConvertH512ToPeerID(peerID)))
+		// No point processing empty response
+		return nil
+	}
 	// Stream is at the BlockHeadersPacket, which is list of headers
 	if _, err := rlpStream.List(); err != nil {
 		return fmt.Errorf("decode 2 BlockHeadersPacket66: %w", err)
@@ -478,6 +562,9 @@ func (cs *MultiClient) newBlock66(ctx context.Context, inreq *proto_sentry.Inbou
 	if err := request.SanityCheck(); err != nil {
 		return fmt.Errorf("newBlock66: %w", err)
 	}
+	if err := request.Block.HashCheck(); err != nil {
+		return fmt.Errorf("newBlock66: %w", err)
+	}
 
 	if segments, penalty, err := cs.Hd.SingleHeaderAsSegment(headerRaw, request.Block.Header(), true /* penalizePoSBlocks */); err == nil {
 		if penalty == headerdownload.NoPenalty {
@@ -529,12 +616,23 @@ func (cs *MultiClient) newBlock66(ctx context.Context, inreq *proto_sentry.Inbou
 	return nil
 }
 
-func (cs *MultiClient) blockBodies66(inreq *proto_sentry.InboundMessage, _ direct.SentryClient) error {
+func (cs *MultiClient) blockBodies66(ctx context.Context, inreq *proto_sentry.InboundMessage, sentry direct.SentryClient) error {
 	var request eth.BlockRawBodiesPacket66
 	if err := rlp.DecodeBytes(inreq.Data, &request); err != nil {
 		return fmt.Errorf("decode BlockBodiesPacket66: %w", err)
 	}
 	txs, uncles := request.BlockRawBodiesPacket.Unpack()
+	if len(txs) == 0 && len(uncles) == 0 {
+		outreq := proto_sentry.PeerUselessRequest{
+			PeerId: inreq.PeerId,
+		}
+		if _, err := sentry.PeerUseless(ctx, &outreq, &grpc.EmptyCallOption{}); err != nil {
+			return fmt.Errorf("sending peer useless request: %v", err)
+		}
+		log.Debug("Requested removal of peer for empty body response", "peerId", fmt.Sprintf("%x", ConvertH512ToPeerID(inreq.PeerId)))
+		// No point processing empty response
+		return nil
+	}
 	cs.Bd.DeliverBodies(&txs, &uncles, uint64(len(inreq.Data)), ConvertH512ToPeerID(inreq.PeerId))
 	return nil
 }
@@ -703,7 +801,7 @@ func (cs *MultiClient) handleInboundMessage(ctx context.Context, inreq *proto_se
 	case proto_sentry.MessageId_NEW_BLOCK_66:
 		return cs.newBlock66(ctx, inreq, sentry)
 	case proto_sentry.MessageId_BLOCK_BODIES_66:
-		return cs.blockBodies66(inreq, sentry)
+		return cs.blockBodies66(ctx, inreq, sentry)
 	case proto_sentry.MessageId_GET_BLOCK_HEADERS_66:
 		return cs.getBlockHeaders66(ctx, inreq, sentry)
 	case proto_sentry.MessageId_GET_BLOCK_BODIES_66:
@@ -712,6 +810,9 @@ func (cs *MultiClient) handleInboundMessage(ctx context.Context, inreq *proto_se
 		return cs.receipts66(ctx, inreq, sentry)
 	case proto_sentry.MessageId_GET_RECEIPTS_66:
 		return cs.getReceipts66(ctx, inreq, sentry)
+	// === voteMessage ===
+	case proto_sentry.MessageId_VOTE_MESSAGE_68:
+		return cs.voteMessage68(ctx, inreq, sentry)
 	default:
 		return fmt.Errorf("not implemented for message Id: %s", inreq.Id)
 	}
@@ -753,11 +854,14 @@ func (cs *MultiClient) makeStatusData() *proto_sentry.StatusData {
 		NetworkId:       s.networkId,
 		TotalDifficulty: gointerfaces.ConvertUint256IntToH256(s.headTd),
 		BestHash:        gointerfaces.ConvertHashToH256(s.headHash),
-		MaxBlock:        s.headHeight,
+		MaxBlockHeight:  s.headHeight,
+		MaxBlockTime:    s.headTime,
 		ForkData: &proto_sentry.Forks{
-			Genesis: gointerfaces.ConvertHashToH256(s.genesisHash),
-			Forks:   s.forks,
+			Genesis:     gointerfaces.ConvertHashToH256(s.genesisHash),
+			HeightForks: s.heightForks,
+			TimeForks:   s.timeForks,
 		},
+		PassivePeers: cs.passivePeers,
 	}
 }
 

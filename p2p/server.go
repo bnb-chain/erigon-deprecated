@@ -139,7 +139,12 @@ type Config struct {
 	// the server is started.
 	ListenAddr string
 
+	// AllowedPorts is list of ports allowed to pick to create Listener on it (see ListenAddr)
+	// for different protocol versions
+	AllowedPorts []uint
+
 	// eth/66, eth/67, etc
+	// eth/66, eth/67, eth/68, etc
 	ProtocolVersion []uint
 
 	SentryAddr []string
